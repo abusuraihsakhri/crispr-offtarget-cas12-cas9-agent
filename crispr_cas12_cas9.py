@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional, Tuple
@@ -88,11 +89,27 @@ class CRISPRCas12Cas9Engine:
     """Engine for comparative Cas9 vs Cas12a off-target modeling."""
 
     @staticmethod
+    def _validate_sequence(seq: str, context: str) -> str:
+        """Validate and sanitize a nucleotide sequence."""
+        if not seq:
+            raise ValueError(f"{context} sequence cannot be empty")
+        sanitized = str(seq).upper().strip()
+        valid_bases = set("ACGT")
+        invalid = set(sanitized) - valid_bases
+        if invalid:
+            raise ValueError(
+                f"{context} sequence contains invalid characters: {invalid}. Only A, C, G, T allowed."
+            )
+        return sanitized
+
+    @staticmethod
     def calculate_spcas9_cleavage_prob(on_target: str, off_target: str) -> Tuple[float, List[MismatchDetail]]:
         """
         Calculate SpCas9 cleavage probability based on Hsu-Zhang position weighting.
         on_target and off_target: 20nt sequences.
         """
+        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target")
+        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target")
         seq_len = min(20, min(len(on_target), len(off_target)))
         mismatches: List[MismatchDetail] = []
         mm_positions = []
@@ -138,6 +155,8 @@ class CRISPRCas12Cas9Engine:
         Calculate AsCas12a cleavage probability.
         on_target and off_target: 23nt sequences (PAM at 5' end, seed is pos 1-8).
         """
+        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target")
+        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target")
         seq_len = min(23, min(len(on_target), len(off_target)))
         mismatches: List[MismatchDetail] = []
 
@@ -267,6 +286,16 @@ class CRISPRCas12Cas9Engine:
 # CLI & BATCH PROCESSING
 # ==============================================================================
 
+def _validate_safe_path(filepath: str) -> str:
+    """Validate that a file path does not contain path traversal attempts."""
+    normalized = os.path.normpath(filepath)
+    if ".." in normalized.split(os.sep):
+        raise argparse.ArgumentTypeError(
+            f"Path traversal detected in '{filepath}'. Paths must not contain '..' segments."
+        )
+    return normalized
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="crispr-offtarget-cas12-cas9-agent",
@@ -288,8 +317,8 @@ def main(argv=None):
 
     # Batch
     p_batch = subparsers.add_parser("batch", help="Batch process CSV records")
-    p_batch.add_argument("-i", "--input", required=True)
-    p_batch.add_argument("-o", "--output", default="cas_comparison_results.csv")
+    p_batch.add_argument("-i", "--input", required=True, type=_validate_safe_path)
+    p_batch.add_argument("-o", "--output", default="cas_comparison_results.csv", type=_validate_safe_path)
 
     args = parser.parse_args(argv)
 

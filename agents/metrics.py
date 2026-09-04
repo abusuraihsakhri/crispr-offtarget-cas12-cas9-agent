@@ -1,7 +1,6 @@
 """
 Prometheus Operational Metrics Exporter for crispr-offtarget-cas12-cas9-agent.
 """
-import time
 from typing import Dict, Any
 
 class SystemMetricsCollector:

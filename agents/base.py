@@ -10,16 +10,28 @@ import hmac
 import hashlib
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field
 
 PHI_PATTERNS = [
+    # Medical Record Numbers
     re.compile(r"\b(?:MRN|mrn)[:#\s-]*\d{4,10}\b", re.IGNORECASE),
+    # Social Security Numbers (XXX-XX-XXXX)
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    # Phone numbers (various formats)
     re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
-    re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
+    # Email addresses
+    re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    # Date of Birth patterns
     re.compile(r"\b(?:DOB|Date of Birth)[:\s]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", re.IGNORECASE),
+    # Patient names
     re.compile(r"\b(?:Patient\s+Name|Patient)[:\s]+[A-Z][a-z]+\s+[A-Z][a-z]+\b", re.IGNORECASE),
-    re.compile(r"\b(?:John\s+Doe|Jane\s+Smith|Alice\s+Johnson)\b", re.IGNORECASE),
+    # Common placeholder names (test data)
+    re.compile(r"\b(?:John\s+Doe|Jane\s+Smith|Alice\s+Johnson|Bob\s+Wilson|Mary\s+Brown)\b", re.IGNORECASE),
+    # Health Insurance Claim Numbers (HICN)
+    re.compile(r"\bHICN[:#\s-]*\w{8,15}\b", re.IGNORECASE),
+    # Credit card numbers (basic pattern)
+    re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
+    # IP addresses (potential identifier in some contexts)
+    re.compile(r"\b(?:ip\s+address|ipaddr)[:#\s]*\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", re.IGNORECASE),
 ]
 
 
@@ -33,12 +45,25 @@ class ResourceLimitExceededException(Exception):
     pass
 
 
+MAX_PHI_CHECK_LENGTH = 10000  # Prevent ReDoS with extremely long inputs
+
+
 def assert_no_phi(text: str) -> None:
+    """Assert that text contains no Protected Health Information (PHI).
+
+    Raises SecurityException if PHI patterns are detected.
+    Input is truncated to MAX_PHI_CHECK_LENGTH to prevent ReDoS.
+    """
     if not text:
         return
+    text_str = str(text)
+    if len(text_str) > MAX_PHI_CHECK_LENGTH:
+        text_str = text_str[:MAX_PHI_CHECK_LENGTH]
     for pattern in PHI_PATTERNS:
-        if pattern.search(str(text)):
-            raise SecurityException(f"PHI Outbound Guard Violation: Sensitive identifier detected with pattern {pattern.pattern}")
+        if pattern.search(text_str):
+            raise SecurityException(
+                f"PHI Outbound Guard Violation: Sensitive identifier detected with pattern '{pattern.pattern}'"
+            )
 
 
 class PHIGuard:
@@ -57,7 +82,18 @@ class PHIGuard:
 class AuditTrail:
     """Cryptographic Tamper-Evident HMAC-SHA256 Audit Trail."""
     def __init__(self, secret_key: Optional[str] = None):
-        self.secret_key = (secret_key or os.getenv("AUDIT_SECRET_KEY", "crispr-offtarget-cas12-cas9-agent-master-audit-key-2026")).encode("utf-8")
+        resolved_key = secret_key or os.getenv("AUDIT_SECRET_KEY")
+        if not resolved_key:
+            import secrets
+            resolved_key = secrets.token_hex(32)
+            import warnings
+            warnings.warn(
+                "AUDIT_SECRET_KEY not set. Generated ephemeral key - audit trail will not persist across restarts. "
+                "Set the AUDIT_SECRET_KEY environment variable for production use.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        self.secret_key = resolved_key.encode("utf-8") if isinstance(resolved_key, str) else resolved_key
         self.logs: List[Dict[str, Any]] = []
 
     def log(self, actor: str, actor_tier: str, event_type: str, details: Dict[str, Any]) -> Dict[str, Any]:

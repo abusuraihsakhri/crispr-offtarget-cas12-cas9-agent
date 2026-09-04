@@ -4,12 +4,23 @@ Command Line Interface for Crispr Offtarget Cas12 Cas9 Agent.
 import argparse
 import csv
 import json
+import os
 import sys
 from agents.models import SystemTaskPayload
 from agents.supervisor import SystemSupervisor
 from agents.base import AuditLogger
 
 supervisor = SystemSupervisor(model_provider="mock")
+
+
+def _validate_safe_path(filepath: str) -> str:
+    """Validate that a file path does not contain path traversal attempts."""
+    normalized = os.path.normpath(filepath)
+    if ".." in normalized.split(os.sep):
+        raise argparse.ArgumentTypeError(
+            f"Path traversal detected in '{filepath}'. Paths must not contain '..' segments."
+        )
+    return normalized
 
 
 def main(argv=None):
@@ -31,8 +42,8 @@ def main(argv=None):
 
     # Batch
     p_batch = subparsers.add_parser("batch", help="Batch process CSV records")
-    p_batch.add_argument("-i", "--input", required=True)
-    p_batch.add_argument("-o", "--output", default="results.csv")
+    p_batch.add_argument("-i", "--input", required=True, type=_validate_safe_path)
+    p_batch.add_argument("-o", "--output", default="results.csv", type=_validate_safe_path)
 
     # Verify Audit
     subparsers.add_parser("verify-audit", help="Verify HMAC audit trail integrity")

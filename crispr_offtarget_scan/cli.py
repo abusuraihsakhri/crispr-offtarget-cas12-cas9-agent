@@ -4,11 +4,22 @@ Command-Line Interface for CRISPR-Scan Pro: Cas9 / Cas12a CFD Score & Off-Target
 import argparse
 import csv
 import json
+import os
 import sys
 from .models import FrontierPayload
 from .agents import CRISPRScanCoordinator
 
 coordinator = CRISPRScanCoordinator()
+
+
+def _validate_safe_path(filepath: str) -> str:
+    """Validate that a file path does not contain path traversal attempts."""
+    normalized = os.path.normpath(filepath)
+    if ".." in normalized.split(os.sep):
+        raise argparse.ArgumentTypeError(
+            f"Path traversal detected in '{filepath}'. Paths must not contain '..' segments."
+        )
+    return normalized
 
 
 def main(argv=None):
@@ -30,8 +41,8 @@ def main(argv=None):
 
     # Batch
     p_batch = subparsers.add_parser("batch", help="Batch process CSV records")
-    p_batch.add_argument("-i", "--input", required=True)
-    p_batch.add_argument("-o", "--output", default="results.csv")
+    p_batch.add_argument("-i", "--input", required=True, type=_validate_safe_path)
+    p_batch.add_argument("-o", "--output", default="results.csv", type=_validate_safe_path)
 
     # Serve
     p_serve = subparsers.add_parser("serve", help="Launch FastAPI REST server")
