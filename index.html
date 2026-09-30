@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Research-use Cas9/Cas12a supplied-candidate mismatch heuristic running locally in the browser.">
+  <title>CRISPR Off-Target Candidate Explorer</title>
+  <link rel="stylesheet" href="./web/styles.css">
+  <script defer src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>
+  <script defer src="./web/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div>
+      <p class="eyebrow">Research-use sequence utility</p>
+      <h1>CRISPR Off-Target Candidate Explorer</h1>
+      <p class="lede">
+        Compare a Cas9 or Cas12a guide against candidate protospacer sequences with the
+        repository's simplified position-weighted Python model.
+      </p>
+    </div>
+    <div class="runtime-badge" id="runtime-status" role="status" aria-live="polite">
+      Loading Python runtime…
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+    <section class="panel input-panel" aria-labelledby="input-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">Inputs</p>
+          <h2 id="input-heading">Guide and candidate sequences</h2>
+        </div>
+        <button id="example-button" class="button secondary" type="button">Load example</button>
+      </div>
+
+      <form id="assessment-form">
+        <div class="field-grid">
+          <div class="field">
+            <label for="guide-id">Guide ID</label>
+            <input id="guide-id" name="guide-id" value="GUIDE-001" maxlength="128" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="nuclease">Nuclease</label>
+            <select id="nuclease" name="nuclease">
+              <option value="SpCas9">SpCas9</option>
+              <option value="AsCas12a">AsCas12a</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="on-target">On-target protospacer</label>
+          <input
+            id="on-target"
+            name="on-target"
+            value="GACACCGTGGACAGCAACAT"
+            spellcheck="false"
+            autocomplete="off"
+            aria-describedby="sequence-help"
+          >
+          <p class="help" id="sequence-help">
+            Use A/C/G/T only. SpCas9 expects 20 nt; AsCas12a expects 23 nt.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="off-targets">Candidate off-target protospacers</label>
+          <textarea
+            id="off-targets"
+            name="off-targets"
+            rows="7"
+            spellcheck="false"
+            aria-describedby="candidate-help"
+          >TACACCGTGGACAGCAACAT
+GACACCGTGGACAGCAACAA</textarea>
+          <p class="help" id="candidate-help">
+            One candidate per line. This tool evaluates supplied sequences; it does not search a genome.
+          </p>
+        </div>
+
+        <div class="actions">
+          <button id="run-button" class="button primary" type="submit" disabled>Run assessment</button>
+          <button id="download-button" class="button secondary" type="button" disabled>Download JSON</button>
+        </div>
+      </form>
+
+      <div class="notice" role="note">
+        <strong>Model scope.</strong>
+        The score is a simplified position-weighted heuristic inspired by published CRISPR
+        specificity work. It is not the complete CFD model, does not account for genomic
+        context or exhaustive locus discovery, and is not clinical decision support.
+      </div>
+    </section>
+
+    <section class="panel results-panel" aria-labelledby="results-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">Output</p>
+          <h2 id="results-heading">Assessment</h2>
+        </div>
+      </div>
+
+      <div id="message" class="message" role="status" aria-live="polite">
+        The Python engine is initializing.
+      </div>
+
+      <div id="results" hidden>
+        <div class="summary-grid">
+          <div class="metric">
+            <span class="metric-label">Heuristic score</span>
+            <strong id="score-value">—</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Tier</span>
+            <strong id="tier-value">—</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Candidates</span>
+            <strong id="candidate-count">—</strong>
+          </div>
+        </div>
+
+        <div class="interpretation">
+          <h3>Interpretation</h3>
+          <p id="interpretation-text"></p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Candidate sequence results</caption>
+            <thead>
+              <tr>
+                <th scope="col">Candidate</th>
+                <th scope="col">Sequence</th>
+                <th scope="col">Mismatches</th>
+                <th scope="col">Seed mismatches</th>
+                <th scope="col">Cleavage score</th>
+                <th scope="col">Risk tier</th>
+              </tr>
+            </thead>
+            <tbody id="result-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      Processing occurs in this browser. The Python runtime is loaded from a pinned jsDelivr
+      Pyodide distribution; entered sequences are not sent to this repository's server.
+    </p>
+    <p><a href="https://github.com/abusuraihsakhri/crispr-offtarget-cas12-cas9-agent">Source repository</a></p>
+  </footer>
+</body>
+</html>
