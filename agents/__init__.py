@@ -1,7 +1,3 @@
-"""
-Crispr Offtarget Cas12 Cas9 Agent — Enterprise Automated Analytical Suite.
-Domain: AI Drug Discovery, Structural Biology & Wet-Lab Robotics
-Standard: wwPDB / IUPAC / OpenSMILES / ISAC Standards
+"""Rule-based audit utilities bundled with the CRISPR off-target project."""
 
-"""
-__version__ = "3.0.0-ENTERPRISE"
+__version__ = "2.1.0"

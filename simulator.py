@@ -1,36 +1,37 @@
-"""
-Distributed Component High-Throughput Traffic & Stress Testing Simulator for Crispr Offtarget Cas12 Cas9 Agent.
-"""
-import time
+"""High-throughput simulator for the deterministic audit subsystem."""
+
 import random
 import sys
+import time
+
+from agents.base import AuditLogger, PHIGuard, SecurityException
 from agents.models import SystemTaskPayload
 from agents.supervisor import SystemSupervisor
-from agents.base import PHIGuard, SecurityException, AuditLogger
+
 
 def run_simulation(iterations: int = 100):
-    print(f"Starting Distributed Component Simulation on Crispr Offtarget Cas12 Cas9 Agent ({iterations} tasks)...")
+    if iterations <= 0:
+        raise ValueError("iterations must be greater than zero")
+
+    print(f"Starting audit-subsystem simulation ({iterations} tasks)...")
     supervisor = SystemSupervisor(model_provider="mock")
-    start_time = time.time()
-    nominal_count = 0
+    started = time.time()
+    routine_count = 0
     elevated_count = 0
     critical_count = 0
+    phi_test_count = 0
     phi_blocked_count = 0
 
-    for i in range(iterations):
-        # 1. Normal / Elevated / Critical payload distribution
-        p_val = random.uniform(5.0, 40.0)
-        s_val = random.uniform(1.0, 20.0)
-        is_crit = random.random() < 0.15
-        descriptor = random.choice(["NOMINAL", "DISCORDANT_ANOMALY", "MUTANT_VARIANT", "OPTIMAL"])
-
+    for index in range(iterations):
         payload = SystemTaskPayload(
-            task_id=f"SIM-{i+1:04d}",
+            task_id=f"SIM-{index + 1:04d}",
             target_identifier=f"SPECIMEN-{random.randint(100, 999)}",
-            primary_metric=round(p_val, 2),
-            secondary_metric=round(s_val, 2),
-            status_descriptor=descriptor,
-            is_critical_flag=is_crit
+            primary_metric=round(random.uniform(5.0, 40.0), 2),
+            secondary_metric=round(random.uniform(1.0, 20.0), 2),
+            status_descriptor=random.choice(
+                ["NOMINAL", "DISCORDANT_ANOMALY", "MUTANT_VARIANT", "OPTIMAL"]
+            ),
+            is_critical_flag=random.random() < 0.15,
         )
 
         dossier = supervisor.process_task(payload)
@@ -39,29 +40,41 @@ def run_simulation(iterations: int = 100):
         elif dossier.overall_urgency.value == "ELEVATED_RISK":
             elevated_count += 1
         else:
-            nominal_count += 1
+            routine_count += 1
 
-        # 2. Adversarial PHI test injection (every 25 iterations)
-        if (i + 1) % 25 == 0:
+        if (index + 1) % 25 == 0:
+            phi_test_count += 1
             try:
-                PHIGuard.assert_no_phi(f"Patient John Doe MRN-{random.randint(100000, 999999)} test")
+                PHIGuard.assert_no_phi(
+                    f"Patient John Doe MRN-{random.randint(100000, 999999)} test"
+                )
             except SecurityException:
                 phi_blocked_count += 1
 
-    elapsed = time.time() - start_time
+    elapsed = time.time() - started
+    intercept_rate = (
+        f"{phi_blocked_count / phi_test_count * 100:.1f}%"
+        if phi_test_count
+        else "not exercised"
+    )
+
     print("\n" + "=" * 70)
-    print(f"  SIMULATION SUMMARY FOR CRISPR OFFTARGET CAS12 CAS9 AGENT")
+    print("  SIMULATION SUMMARY")
     print("=" * 70)
-    print(f"  Total Tasks Processed:     {iterations}")
-    print(f"  Elapsed Time:              {elapsed:.3f} seconds ({iterations/max(0.001, elapsed):.1f} tasks/sec)")
-    print(f"  Routine Outcomes:          {nominal_count} ({nominal_count/iterations*100:.1f}%)")
-    print(f"  Elevated Risk Outcomes:    {elevated_count} ({elevated_count/iterations*100:.1f}%)")
-    print(f"  Critical Interventions:    {critical_count} ({critical_count/iterations*100:.1f}%)")
-    print(f"  Adversarial PHI Intercepts:{phi_blocked_count} (100% Interception Rate)")
-    print(f"  HMAC Audit Ledger Blocks:  {len(AuditLogger.get_trail())}")
-    print(f"  HMAC Cryptographic Check:  {AuditLogger.verify_integrity()}")
+    print(f"  Total Tasks Processed:      {iterations}")
+    print(
+        f"  Elapsed Time:               {elapsed:.3f} seconds "
+        f"({iterations / max(0.001, elapsed):.1f} tasks/sec)"
+    )
+    print(f"  Routine Outcomes:           {routine_count} ({routine_count / iterations * 100:.1f}%)")
+    print(f"  Elevated Outcomes:          {elevated_count} ({elevated_count / iterations * 100:.1f}%)")
+    print(f"  Critical-flag Outcomes:     {critical_count} ({critical_count / iterations * 100:.1f}%)")
+    print(f"  Identifier Guard Tests:     {phi_blocked_count}/{phi_test_count} ({intercept_rate})")
+    print(f"  HMAC Audit Ledger Blocks:   {len(AuditLogger.get_trail())}")
+    print(f"  HMAC Integrity Check:       {AuditLogger.verify_integrity()}")
     print("=" * 70)
 
+
 if __name__ == "__main__":
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 100
-    run_simulation(n)
+    count = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    run_simulation(count)

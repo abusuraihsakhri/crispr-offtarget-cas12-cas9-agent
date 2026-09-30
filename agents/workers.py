@@ -1,63 +1,85 @@
-"""
-Specialized Domain Worker Agents for Crispr Offtarget Cas12 Cas9 Agent.
-Domain: AI Drug Discovery, Structural Biology & Wet-Lab Robotics
-Standard: wwPDB / IUPAC / OpenSMILES / ISAC Standards
-"""
+"""Deterministic threshold workers used by the generic audit subsystem."""
+
 import uuid
 from typing import List
-from .models import SystemTaskPayload, AgentAlert, UrgencyLevel
+
+from .models import AgentAlert, SystemTaskPayload, UrgencyLevel
 
 
 class InvariantQCWorker:
-    """Worker 1: Primary Mathematical & Protocol Boundary Auditor."""
+    """Flag a primary metric above the subsystem's configured threshold."""
 
     @classmethod
     def evaluate(cls, payload: SystemTaskPayload) -> List[AgentAlert]:
-        alerts = []
-        if payload.primary_metric > 25.0:
-            alerts.append(AgentAlert(
+        if payload.primary_metric <= 25.0:
+            return []
+        return [
+            AgentAlert(
                 alert_id=f"QC-{uuid.uuid4().hex[:6]}",
                 origin_worker="InvariantQCWorker",
                 urgency=UrgencyLevel.ELEVATED,
                 summary="Primary Metric Threshold Exceeded",
-                technical_details=f"Primary measurement ({payload.primary_metric:.2f}) exceeds upper reference limit (25.00) under wwPDB / IUPAC / OpenSMILES / ISAC Standards.",
-                actionable_remediation="Initiate recalibration workflow and review secondary parameters.",
-            ))
-        return alerts
+                technical_details=(
+                    f"Primary metric ({payload.primary_metric:.2f}) exceeds "
+                    "the configured threshold (25.00)."
+                ),
+                actionable_remediation=(
+                    "Review the source measurement and the threshold configuration."
+                ),
+            )
+        ]
 
 
 class SafetyEscalationWorker:
-    """Worker 2: Safety Boundary, Toxicity & Emergency Interlock Worker."""
+    """Compatibility-named worker for the critical flag and secondary threshold."""
 
     @classmethod
     def evaluate(cls, payload: SystemTaskPayload) -> List[AgentAlert]:
-        alerts = []
-        if payload.is_critical_flag or payload.secondary_metric > 12.0:
-            alerts.append(AgentAlert(
+        if not payload.is_critical_flag and payload.secondary_metric <= 12.0:
+            return []
+        return [
+            AgentAlert(
                 alert_id=f"SAFE-{uuid.uuid4().hex[:6]}",
                 origin_worker="SafetyEscalationWorker",
-                urgency=UrgencyLevel.CRITICAL_STAT if payload.is_critical_flag else UrgencyLevel.ELEVATED,
-                summary="Critical Safety Interlock Triggered",
-                technical_details=f"CriticalFlag={payload.is_critical_flag} with secondary index {payload.secondary_metric:.2f}.",
-                actionable_remediation="Execute immediate closed-loop escalation and notify attending supervisor.",
-            ))
-        return alerts
+                urgency=(
+                    UrgencyLevel.CRITICAL_STAT
+                    if payload.is_critical_flag
+                    else UrgencyLevel.ELEVATED
+                ),
+                summary="Secondary Threshold or Critical Flag Triggered",
+                technical_details=(
+                    f"critical_flag={payload.is_critical_flag}; "
+                    f"secondary_metric={payload.secondary_metric:.2f}; "
+                    "configured threshold=12.00."
+                ),
+                actionable_remediation=(
+                    "Review the originating record and confirm whether escalation is warranted."
+                ),
+            )
+        ]
 
 
 class ProtocolConformanceWorker:
-    """Worker 3: Spec Conformance, Anomaly Triage & Discordance Checker."""
+    """Flag configured status keywords that indicate a discordant record."""
+
+    TRIGGER_WORDS = ("DISCORDANT", "ANOMALY", "MUTANT", "VIOLATION", "FAIL", "REJECT")
 
     @classmethod
     def evaluate(cls, payload: SystemTaskPayload) -> List[AgentAlert]:
-        alerts = []
-        desc_upper = str(payload.status_descriptor).upper()
-        if any(w in desc_upper for w in ["DISCORDANT", "ANOMALY", "MUTANT", "VIOLATION", "FAIL", "REJECT"]):
-            alerts.append(AgentAlert(
+        descriptor = str(payload.status_descriptor)
+        if not any(word in descriptor.upper() for word in cls.TRIGGER_WORDS):
+            return []
+        return [
+            AgentAlert(
                 alert_id=f"CONF-{uuid.uuid4().hex[:6]}",
                 origin_worker="ProtocolConformanceWorker",
                 urgency=UrgencyLevel.ELEVATED,
-                summary="Protocol Conformance Discordance Detected",
-                technical_details=f"Descriptor '{payload.status_descriptor}' indicates discordance with wwPDB / IUPAC / OpenSMILES / ISAC Standards standards.",
-                actionable_remediation="Re-evaluate input specimen or rerun secondary confirmation assay.",
-            ))
-        return alerts
+                summary="Status Descriptor Trigger Detected",
+                technical_details=(
+                    f"Descriptor {descriptor!r} contains a configured discordance keyword."
+                ),
+                actionable_remediation=(
+                    "Review the status descriptor and source record for consistency."
+                ),
+            )
+        ]
