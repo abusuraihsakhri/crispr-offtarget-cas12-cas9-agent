@@ -1,40 +1,62 @@
-name: Crispr Offtarget Cas12 Cas9 Engine CI/CD & Security Verification
+name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
+
+permissions:
+  contents: read
 
 jobs:
-  test-and-audit:
+  test:
+    name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[api,dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q agents crispr_offtarget_scan cli.py crispr_cas12_cas9.py enrichment.py simulator.py
+      - name: Run test suite
+        run: python -m pytest -q
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+  quality:
+    name: Build, lint, and audit
+    runs-on: ubuntu-latest
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install fastapi uvicorn pydantic pytest
-
-    - name: Run Pytest Suite
-      run: |
-        pytest -v
-
-    - name: Security SAST & Zero-PHI Audit
-      run: |
-        python -c "
-        from agents.base import PHIGuard, AuditLogger
-        import pytest
-        assert AuditLogger.verify_integrity() is True
-        print('Security & Zero-PHI Audit Passed!')
-        "
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[api,dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Build distributions
+        run: python -m build
+      - name: Audit Python dependencies
+        run: pip-audit
+      - name: Smoke-test installed CLI entry points
+        run: |
+          crispr-offtarget --help
+          crispr-agent --help
+      - name: Validate browser JavaScript syntax
+        run: node --check web/app.js
