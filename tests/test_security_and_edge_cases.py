@@ -8,10 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-from agents.base import PHIGuard, AuditLogger, SecurityException, assert_no_phi, MAX_PHI_CHECK_LENGTH
+from agents.base import AuditTrail, PHIGuard, AuditLogger, SecurityException, assert_no_phi, MAX_PHI_CHECK_LENGTH
 from agents.models import SystemTaskPayload
 from agents.supervisor import SystemSupervisor
-from cli import _validate_safe_path, main
+from cli import _parse_bool, _validate_safe_path, main
 
 
 class TestPHIGuardEnforcement:
@@ -58,11 +58,14 @@ class TestPHIGuardEnforcement:
         assert "[REDACTED_IDENTIFIER]" in redacted
         assert "test@example.com" not in redacted
 
-    def test_long_input_truncation(self):
-        """Test that very long inputs are truncated to prevent ReDoS."""
+    def test_long_clean_input_passes(self):
         long_input = "A" * (MAX_PHI_CHECK_LENGTH + 1000)
-        # Should not raise, just truncate
         PHIGuard.assert_no_phi(long_input)
+
+    def test_phi_after_first_chunk_is_detected(self):
+        long_input = "A" * (MAX_PHI_CHECK_LENGTH + 50) + " MRN-12345678"
+        with pytest.raises(SecurityException):
+            PHIGuard.assert_no_phi(long_input)
 
     def test_module_level_assert_no_phi(self):
         """Test the module-level assert_no_phi function."""
@@ -106,6 +109,19 @@ class TestAuditTrailIntegrity:
         supervisor.process_task(payload)
         assert AuditLogger.verify_integrity() is True
 
+    def test_audit_trail_detects_signature_tampering(self):
+        trail = AuditTrail(secret_key="test-secret")
+        trail.log("tester", "unit", "TEST", {"status": "ok"})
+        trail.logs[-1]["event_type"] = "TAMPERED"
+        assert trail.verify_integrity() is False
+
+    def test_audit_trail_returns_defensive_copies(self):
+        trail = AuditTrail(secret_key="test-secret")
+        trail.log("tester", "unit", "TEST", {"status": "ok"})
+        exposed = trail.get_trail()
+        exposed[-1]["event_type"] = "TAMPERED"
+        assert trail.verify_integrity() is True
+
     def test_audit_trail_multiple_entries(self):
         supervisor = SystemSupervisor(model_provider="mock")
         for i in range(5):
@@ -120,6 +136,20 @@ class TestAuditTrailIntegrity:
         trail = AuditLogger.get_trail()
         assert len(trail) >= 5
         assert AuditLogger.verify_integrity() is True
+
+
+class TestCSVBooleanParsing:
+    def test_false_string_is_false(self):
+        assert _parse_bool("False") is False
+        assert _parse_bool("0") is False
+
+    def test_true_string_is_true(self):
+        assert _parse_bool("True") is True
+        assert _parse_bool("1") is True
+
+    def test_invalid_boolean_rejected(self):
+        with pytest.raises(ValueError):
+            _parse_bool("maybe")
 
 
 class TestCLIEdgeCases:
