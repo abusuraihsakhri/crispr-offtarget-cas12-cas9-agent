@@ -1,44 +1,65 @@
-"""
-Supervisor Orchestrator & Operations Intelligence for Crispr Offtarget Cas12 Cas9 Agent.
-Domain: AI Drug Discovery, Structural Biology & Wet-Lab Robotics
-"""
+"""Coordinator for the rule-based audit subsystem."""
+
+import time
 import uuid
-from typing import Dict, Any, List, Optional
-from .base import AuditLogger, PHIGuard
-from .models import SystemTaskPayload, AgentAlert, ConsensusDossier, UrgencyLevel, SystemIntegrityStatus
-from .workers import InvariantQCWorker, SafetyEscalationWorker, ProtocolConformanceWorker
+from typing import Dict, List
+
+from .base import AuditLogger, PHIGuard, SecurityException
 from .llm_factory import LLMFactory
+from .metrics import GLOBAL_METRICS
+from .models import (
+    AgentAlert,
+    ConsensusDossier,
+    SystemIntegrityStatus,
+    SystemTaskPayload,
+    UrgencyLevel,
+)
+from .workers import InvariantQCWorker, ProtocolConformanceWorker, SafetyEscalationWorker
 
 
 class SystemSupervisor:
-    """Master Distributed Component Coordinator for Crispr Offtarget Cas12 Cas9 Agent."""
+    """Coordinate deterministic threshold workers and audit each completed task."""
 
     def __init__(self, model_provider: str = "mock"):
         self.qc_worker = InvariantQCWorker()
         self.safety_worker = SafetyEscalationWorker()
         self.conformance_worker = ProtocolConformanceWorker()
-        self.llm = LLMFactory.create(model_provider, system_name="Crispr Offtarget Cas12 Cas9 Agent")
+        self.llm = LLMFactory.create(model_provider, system_name="CRISPR Off-Target Agent")
         self.dossier_registry: Dict[str, ConsensusDossier] = {}
 
-    def process_task(self, payload: SystemTaskPayload, actor: str = "SystemSupervisor") -> ConsensusDossier:
-        # Zero-PHI outbound validation
-        PHIGuard.assert_no_phi(payload.task_id)
-        PHIGuard.assert_no_phi(payload.target_identifier)
-        PHIGuard.assert_no_phi(payload.status_descriptor)
+    @staticmethod
+    def _guard_payload(payload: SystemTaskPayload) -> None:
+        try:
+            PHIGuard.assert_no_phi(payload.task_id)
+            PHIGuard.assert_no_phi(payload.target_identifier)
+            PHIGuard.assert_no_phi(payload.status_descriptor)
+            PHIGuard.assert_no_phi(str(payload.attributes))
+        except SecurityException:
+            GLOBAL_METRICS.record_phi_block()
+            raise
 
-        # Multi-worker evaluations
-        all_alerts: List[AgentAlert] = []
-        all_alerts.extend(self.qc_worker.evaluate(payload))
-        all_alerts.extend(self.safety_worker.evaluate(payload))
-        all_alerts.extend(self.conformance_worker.evaluate(payload))
+    def process_task(
+        self,
+        payload: SystemTaskPayload,
+        actor: str = "SystemSupervisor",
+    ) -> ConsensusDossier:
+        started = time.perf_counter()
+        self._guard_payload(payload)
 
-        crit_count = sum(1 for a in all_alerts if a.urgency == UrgencyLevel.CRITICAL_STAT)
-        elev_count = sum(1 for a in all_alerts if a.urgency == UrgencyLevel.ELEVATED)
+        alerts: List[AgentAlert] = []
+        alerts.extend(self.qc_worker.evaluate(payload))
+        alerts.extend(self.safety_worker.evaluate(payload))
+        alerts.extend(self.conformance_worker.evaluate(payload))
 
-        if crit_count > 0:
+        critical_count = sum(
+            alert.urgency == UrgencyLevel.CRITICAL_STAT for alert in alerts
+        )
+        elevated_count = sum(alert.urgency == UrgencyLevel.ELEVATED for alert in alerts)
+
+        if critical_count:
             overall_urgency = UrgencyLevel.CRITICAL_STAT
             integrity_status = SystemIntegrityStatus.RECALIBRATION_REQUIRED
-        elif elev_count > 0:
+        elif elevated_count:
             overall_urgency = UrgencyLevel.ELEVATED
             integrity_status = SystemIntegrityStatus.DISCORDANT
         else:
@@ -53,8 +74,8 @@ class SystemSupervisor:
                 "task_id": payload.task_id,
                 "target_identifier": payload.target_identifier,
                 "overall_urgency": overall_urgency.value,
-                "total_alerts": len(all_alerts),
-            }
+                "total_alerts": len(alerts),
+            },
         )
 
         dossier = ConsensusDossier(
@@ -63,17 +84,27 @@ class SystemSupervisor:
             target_identifier=payload.target_identifier,
             overall_urgency=overall_urgency,
             integrity_status=integrity_status,
-            total_alerts=len(all_alerts),
-            critical_alerts_count=crit_count,
-            alerts=all_alerts,
-            consensus_summary=f"Multi-agent consensus completed with status [{overall_urgency.value}]. Total alerts: {len(all_alerts)}.",
+            total_alerts=len(alerts),
+            critical_alerts_count=critical_count,
+            alerts=alerts,
+            consensus_summary=(
+                f"Deterministic three-worker evaluation completed with status "
+                f"[{overall_urgency.value}]. Total alerts: {len(alerts)}."
+            ),
             audit_hash=audit_entry["current_hash"],
         )
 
         self.dossier_registry[dossier.dossier_id] = dossier
+        GLOBAL_METRICS.record_task(
+            overall_urgency.value,
+            time.perf_counter() - started,
+        )
         return dossier
 
     def query_supervisory_chat(self, query: str) -> str:
-        PHIGuard.assert_no_phi(query)
-        prompt = f"Supervisor inquiry for Crispr Offtarget Cas12 Cas9 Agent under wwPDB / IUPAC / OpenSMILES / ISAC Standards: {query}"
-        return self.llm.invoke(prompt)
+        try:
+            PHIGuard.assert_no_phi(query)
+        except SecurityException:
+            GLOBAL_METRICS.record_phi_block()
+            raise
+        return self.llm.invoke(query)

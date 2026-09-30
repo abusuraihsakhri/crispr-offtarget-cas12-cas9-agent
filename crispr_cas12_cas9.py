@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
 """
-CRISPR Cas12a vs Cas9 Comparative Off-Target Specificity & Cleavage Modeling Engine
------------------------------------------------------------------------------------
-Compares SpCas9 (NGG PAM, PAM-proximal 3' seed) and AsCas12a/LbCas12a (TTTV PAM, PAM-proximal 5' seed),
-evaluates position-dependent mismatch cleavage penalties (Hsu-Zhang & CFD models),
-calculates aggregate specificity scores (0-100), and classifies genomic fidelity tiers.
+Research-use Cas9/Cas12a off-target mismatch heuristic.
 
-Domain: Synthetic Biology / CRISPR Genome Editing / Translational Therapeutics
-References: Hsu et al. Nat Biotech 2013; Doench et al. Nat Biotech 2016; Kim et al. Nat Biotech 2016
+This module uses simplified position-dependent mismatch penalties inspired by
+published CRISPR specificity work. It is not an implementation of the complete
+Doench CFD matrix, does not perform genome-wide locus discovery, and is not a
+clinical decision-support system.
 """
 
 import argparse
 import csv
 import json
-import math
 import os
 import sys
-from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# SpCas9 position weights (1 = PAM-distal, 20 = PAM-adjacent)
-# Mismatches close to PAM (pos 13-20) are severely penalizing
 SPCAS9_POSITION_WEIGHTS = {
     1: 0.014, 2: 0.000, 3: 0.039, 4: 0.040, 5: 0.060,
     6: 0.070, 7: 0.080, 8: 0.100, 9: 0.120, 10: 0.150,
@@ -29,8 +24,6 @@ SPCAS9_POSITION_WEIGHTS = {
     16: 0.700, 17: 0.800, 18: 0.850, 19: 0.900, 20: 0.950,
 }
 
-# Cas12a (Cpf1) position weights (1 = PAM-adjacent, 23 = PAM-distal)
-# Mismatches in seed (pos 1-8) severely abolish cleavage
 CAS12A_POSITION_WEIGHTS = {
     1: 0.950, 2: 0.950, 3: 0.920, 4: 0.900, 5: 0.880,
     6: 0.850, 7: 0.800, 8: 0.750, 9: 0.600, 10: 0.500,
@@ -42,40 +35,38 @@ CAS12A_POSITION_WEIGHTS = {
 
 @dataclass
 class MismatchDetail:
-    """Individual nucleotide mismatch between on-target guide and candidate off-target site."""
     position_1_indexed: int
     guide_base: str
     target_base: str
     is_seed_region: bool
     position_penalty_factor: float
-    mismatch_type: str  # e.g. 'rG:dT', 'rC:dA'
+    mismatch_type: str
 
 
 @dataclass
 class OffTargetAssessment:
-    """Evaluation of a single potential off-target genomic site."""
     site_name: str
     off_target_sequence: str
     mismatch_count: int
     seed_mismatches_count: int
     cleavage_probability_percent: float
-    risk_level: str  # 'NEGLIGIBLE', 'LOW', 'MODERATE', 'HIGH_RISK_CLEAVAGE'
+    risk_level: str
     mismatch_details: List[MismatchDetail]
 
 
 @dataclass
 class NucleaseComparisonResult:
-    """Complete comparative analysis between Cas9 and Cas12a architectures."""
     guide_id: str
     on_target_sequence: str
-    nuclease_type: str  # 'SpCas9' or 'AsCas12a'
+    nuclease_type: str
     pam_motif: str
-    pam_orientation: str  # '3_PRIME_NGG' or '5_PRIME_TTTV'
+    pam_orientation: str
     seed_region_definition: str
-    cut_type: str  # 'Blunt' or 'Staggered (5-nt overhang)'
-    overall_specificity_score: float  # 0 to 100
-    fidelity_tier: str  # 'ULTRA_HIGH_SPECIFICITY', 'HIGH_SPECIFICITY', 'MODERATE_SPECIFICITY', 'POOR_OFF_TARGET_RISK'
+    cut_type: str
+    overall_specificity_score: float
+    fidelity_tier: str
     evaluated_off_target_sites: List[OffTargetAssessment]
+    # Kept for backward compatibility. Text is research-use interpretation only.
     clinical_recommendation: str
 
     def to_dict(self) -> Dict[str, Any]:
@@ -86,307 +77,353 @@ class NucleaseComparisonResult:
 
 
 class CRISPRCas12Cas9Engine:
-    """Engine for comparative Cas9 vs Cas12a off-target modeling."""
+    """Simplified position-weighted mismatch model for supplied candidate sequences."""
 
     @staticmethod
-    def _validate_sequence(seq: str, context: str) -> str:
-        """Validate and sanitize a nucleotide sequence."""
-        if not seq:
+    def _validate_sequence(seq: str, context: str, expected_length: int) -> str:
+        if seq is None or str(seq).strip() == "":
             raise ValueError(f"{context} sequence cannot be empty")
         sanitized = str(seq).upper().strip()
-        valid_bases = set("ACGT")
-        invalid = set(sanitized) - valid_bases
+        invalid = set(sanitized) - set("ACGT")
         if invalid:
+            invalid_display = "".join(sorted(invalid))
             raise ValueError(
-                f"{context} sequence contains invalid characters: {invalid}. Only A, C, G, T allowed."
+                f"{context} sequence contains invalid characters: {invalid_display}. "
+                "Only A, C, G, T are allowed."
+            )
+        if len(sanitized) != expected_length:
+            raise ValueError(
+                f"{context} sequence must be exactly {expected_length} nt; "
+                f"received {len(sanitized)} nt"
             )
         return sanitized
 
     @staticmethod
-    def calculate_spcas9_cleavage_prob(on_target: str, off_target: str) -> Tuple[float, List[MismatchDetail]]:
-        """
-        Calculate SpCas9 cleavage probability based on Hsu-Zhang position weighting.
-        on_target and off_target: 20nt sequences.
-        """
-        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target")
-        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target")
-        seq_len = min(20, min(len(on_target), len(off_target)))
-        mismatches: List[MismatchDetail] = []
-        mm_positions = []
-
-        weight_product = 1.0
-        for i in range(seq_len):
-            pos = i + 1  # 1 to 20
-            g_base = on_target[i].upper()
-            t_base = off_target[i].upper()
-            if g_base != t_base:
-                w = SPCAS9_POSITION_WEIGHTS.get(pos, 0.5)
-                weight_product *= (1.0 - w)
-                is_seed = pos >= 11  # PAM-proximal (11-20)
-                mm_positions.append(pos)
-                mismatches.append(MismatchDetail(
-                    position_1_indexed=pos,
-                    guide_base=g_base,
-                    target_base=t_base,
-                    is_seed_region=is_seed,
-                    position_penalty_factor=round(w, 3),
-                    mismatch_type=f"r{g_base}:d{t_base}",
-                ))
-
-        n_mm = len(mismatches)
-        if n_mm == 0:
-            return 100.0, []
-
-        # Mean pairwise distance between mismatches
-        if n_mm > 1:
-            d_mean = (mm_positions[-1] - mm_positions[0]) / (n_mm - 1)
-        else:
-            d_mean = 19.0
-
-        dist_factor = 1.0 / (((19.0 - d_mean) / 19.0) * 4.0 + 1.0)
-        count_factor = 1.0 / (n_mm ** 2)
-
-        prob = weight_product * dist_factor * count_factor * 100.0
-        return max(0.001, min(100.0, prob)), mismatches
+    def _normalize_nuclease(nuclease_type: str) -> str:
+        normalized = str(nuclease_type).strip().lower().replace("-", "")
+        if normalized in {"spcas9", "cas9"}:
+            return "SpCas9"
+        if normalized in {"ascas12a", "lbcas12a", "cas12a", "cpf1"}:
+            return "AsCas12a"
+        raise ValueError(
+            f"Unsupported nuclease {nuclease_type!r}. Use SpCas9 or AsCas12a."
+        )
 
     @staticmethod
-    def calculate_cas12a_cleavage_prob(on_target: str, off_target: str) -> Tuple[float, List[MismatchDetail]]:
-        """
-        Calculate AsCas12a cleavage probability.
-        on_target and off_target: 23nt sequences (PAM at 5' end, seed is pos 1-8).
-        """
-        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target")
-        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target")
-        seq_len = min(23, min(len(on_target), len(off_target)))
+    def calculate_spcas9_cleavage_prob(
+        on_target: str,
+        off_target: str,
+    ) -> Tuple[float, List[MismatchDetail]]:
+        """Return a heuristic cleavage score for two 20-nt SpCas9 protospacers."""
+        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target", 20)
+        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target", 20)
+
         mismatches: List[MismatchDetail] = []
-
+        mismatch_positions: List[int] = []
         weight_product = 1.0
-        for i in range(seq_len):
-            pos = i + 1  # 1 to 23
-            g_base = on_target[i].upper()
-            t_base = off_target[i].upper()
-            if g_base != t_base:
-                w = CAS12A_POSITION_WEIGHTS.get(pos, 0.2)
-                weight_product *= (1.0 - w)
-                is_seed = pos <= 8  # PAM-proximal 5' seed (1-8)
-                mismatches.append(MismatchDetail(
-                    position_1_indexed=pos,
-                    guide_base=g_base,
-                    target_base=t_base,
-                    is_seed_region=is_seed,
-                    position_penalty_factor=round(w, 3),
-                    mismatch_type=f"r{g_base}:d{t_base}",
-                ))
 
-        n_mm = len(mismatches)
-        if n_mm == 0:
+        for index, (guide_base, target_base) in enumerate(zip(on_target, off_target), start=1):
+            if guide_base == target_base:
+                continue
+            weight = SPCAS9_POSITION_WEIGHTS[index]
+            weight_product *= 1.0 - weight
+            mismatch_positions.append(index)
+            mismatches.append(
+                MismatchDetail(
+                    position_1_indexed=index,
+                    guide_base=guide_base,
+                    target_base=target_base,
+                    is_seed_region=index >= 11,
+                    position_penalty_factor=round(weight, 3),
+                    mismatch_type=f"r{guide_base}:d{target_base}",
+                )
+            )
+
+        mismatch_count = len(mismatches)
+        if mismatch_count == 0:
             return 100.0, []
 
-        count_factor = 1.0 / (n_mm ** 2.2)
-        prob = weight_product * count_factor * 100.0
-        return max(0.0001, min(100.0, prob)), mismatches
+        if mismatch_count > 1:
+            mean_distance = (
+                mismatch_positions[-1] - mismatch_positions[0]
+            ) / (mismatch_count - 1)
+        else:
+            mean_distance = 19.0
+
+        distance_factor = 1.0 / (((19.0 - mean_distance) / 19.0) * 4.0 + 1.0)
+        count_factor = 1.0 / (mismatch_count**2)
+        probability = weight_product * distance_factor * count_factor * 100.0
+        return max(0.001, min(100.0, probability)), mismatches
+
+    @staticmethod
+    def calculate_cas12a_cleavage_prob(
+        on_target: str,
+        off_target: str,
+    ) -> Tuple[float, List[MismatchDetail]]:
+        """Return a heuristic cleavage score for two 23-nt Cas12a protospacers."""
+        on_target = CRISPRCas12Cas9Engine._validate_sequence(on_target, "On-target", 23)
+        off_target = CRISPRCas12Cas9Engine._validate_sequence(off_target, "Off-target", 23)
+
+        mismatches: List[MismatchDetail] = []
+        weight_product = 1.0
+
+        for index, (guide_base, target_base) in enumerate(zip(on_target, off_target), start=1):
+            if guide_base == target_base:
+                continue
+            weight = CAS12A_POSITION_WEIGHTS[index]
+            weight_product *= 1.0 - weight
+            mismatches.append(
+                MismatchDetail(
+                    position_1_indexed=index,
+                    guide_base=guide_base,
+                    target_base=target_base,
+                    is_seed_region=index <= 8,
+                    position_penalty_factor=round(weight, 3),
+                    mismatch_type=f"r{guide_base}:d{target_base}",
+                )
+            )
+
+        mismatch_count = len(mismatches)
+        if mismatch_count == 0:
+            return 100.0, []
+
+        count_factor = 1.0 / (mismatch_count**2.2)
+        probability = weight_product * count_factor * 100.0
+        return max(0.0001, min(100.0, probability)), mismatches
 
     @classmethod
     def evaluate_guide(
         cls,
         guide_id: str = "GUIDE-001",
         on_target_sequence: str = "GACACCGTGGACAGCAACAT",
-        nuclease_type: str = "SpCas9",  # 'SpCas9' or 'AsCas12a'
+        nuclease_type: str = "SpCas9",
         off_target_candidates: Optional[List[Dict[str, str]]] = None,
     ) -> NucleaseComparisonResult:
-        """Evaluate guide specificity across a panel of candidate genomic off-target sites."""
-        nuc = "AsCas12a" if "12" in nuclease_type or "CPF1" in nuclease_type.upper() else "SpCas9"
-        off_targets = off_target_candidates or []
+        """Evaluate supplied candidate sequences; this function does not search a genome."""
+        nuclease = cls._normalize_nuclease(nuclease_type)
+        expected_length = 20 if nuclease == "SpCas9" else 23
+        on_target_sequence = cls._validate_sequence(
+            on_target_sequence,
+            "On-target",
+            expected_length,
+        )
+        candidates = [] if off_target_candidates is None else off_target_candidates
 
         assessments: List[OffTargetAssessment] = []
-        total_off_target_cleavage = 0.0
+        total_candidate_cleavage = 0.0
 
-        for candidate in off_targets:
-            s_name = candidate.get("name", "OT-Site")
-            s_seq = candidate.get("sequence", on_target_sequence)
+        for index, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict):
+                raise ValueError(f"Off-target candidate {index} must be an object/dictionary")
+            if "sequence" not in candidate:
+                raise ValueError(f"Off-target candidate {index} is missing a sequence")
 
-            if nuc == "SpCas9":
-                prob, mm_list = cls.calculate_spcas9_cleavage_prob(on_target_sequence, s_seq)
+            site_name = str(candidate.get("name") or f"OT-{index:02d}")
+            sequence = candidate["sequence"]
+
+            if nuclease == "SpCas9":
+                probability, mismatch_list = cls.calculate_spcas9_cleavage_prob(
+                    on_target_sequence,
+                    sequence,
+                )
             else:
-                prob, mm_list = cls.calculate_cas12a_cleavage_prob(on_target_sequence, s_seq)
+                probability, mismatch_list = cls.calculate_cas12a_cleavage_prob(
+                    on_target_sequence,
+                    sequence,
+                )
 
-            seed_mms = sum(1 for m in mm_list if m.is_seed_region)
-            n_mm = len(mm_list)
-
-            if prob >= 20.0:
-                risk = "HIGH_RISK_CLEAVAGE"
-            elif prob >= 5.0:
-                risk = "MODERATE"
-            elif prob >= 0.5:
-                risk = "LOW"
+            seed_mismatches = sum(item.is_seed_region for item in mismatch_list)
+            mismatch_count = len(mismatch_list)
+            if probability >= 20.0:
+                risk_level = "HIGH_RISK_CLEAVAGE"
+            elif probability >= 5.0:
+                risk_level = "MODERATE"
+            elif probability >= 0.5:
+                risk_level = "LOW"
             else:
-                risk = "NEGLIGIBLE"
+                risk_level = "NEGLIGIBLE"
 
-            if n_mm > 0:  # Only count actual off-targets
-                total_off_target_cleavage += prob
+            total_candidate_cleavage += probability
+            assessments.append(
+                OffTargetAssessment(
+                    site_name=site_name,
+                    off_target_sequence=str(sequence).upper().strip(),
+                    mismatch_count=mismatch_count,
+                    seed_mismatches_count=seed_mismatches,
+                    cleavage_probability_percent=round(probability, 3),
+                    risk_level=risk_level,
+                    mismatch_details=mismatch_list,
+                )
+            )
 
-            assessments.append(OffTargetAssessment(
-                site_name=s_name,
-                off_target_sequence=s_seq,
-                mismatch_count=n_mm,
-                seed_mismatches_count=seed_mms,
-                cleavage_probability_percent=round(prob, 3),
-                risk_level=risk,
-                mismatch_details=mm_list,
-            ))
-
-        # Overall Specificity Score: 100 / (1 + sum(prob))
-        if total_off_target_cleavage > 0:
-            spec_score = 100.0 / (1.0 + (total_off_target_cleavage / 10.0))
+        if assessments:
+            specificity_score = round(
+                max(0.0, min(100.0, 100.0 / (1.0 + total_candidate_cleavage / 10.0))),
+                1,
+            )
+            if specificity_score >= 85.0:
+                tier = "HIGH_HEURISTIC_SPECIFICITY"
+                recommendation = (
+                    "Low aggregate cleavage score across the supplied candidates. "
+                    "Validate experimentally and with genome-aware off-target discovery."
+                )
+            elif specificity_score >= 65.0:
+                tier = "INTERMEDIATE_HEURISTIC_SPECIFICITY"
+                recommendation = (
+                    "Intermediate aggregate candidate risk. Expand candidate discovery "
+                    "and perform orthogonal experimental validation."
+                )
+            elif specificity_score >= 40.0:
+                tier = "ELEVATED_HEURISTIC_RISK"
+                recommendation = (
+                    "Elevated aggregate candidate risk in this heuristic model. "
+                    "Consider alternative guides and experimental validation."
+                )
+            else:
+                tier = "HIGH_HEURISTIC_RISK"
+                recommendation = (
+                    "High aggregate candidate cleavage score in this heuristic model. "
+                    "Do not treat this result as a clinical decision."
+                )
         else:
-            spec_score = 99.5
+            specificity_score = 0.0
+            tier = "NOT_ASSESSED"
+            recommendation = (
+                "No off-target candidates were supplied, so specificity cannot be assessed. "
+                "Provide candidate loci from a genome-aware search before interpreting risk."
+            )
 
-        spec_score = round(max(0.0, min(100.0, spec_score)), 1)
-
-        if spec_score >= 85.0:
-            tier = "ULTRA_HIGH_SPECIFICITY"
-            rec = "High genomic fidelity guide. Negligible genome-wide off-target cleavage risk."
-        elif spec_score >= 65.0:
-            tier = "HIGH_SPECIFICITY"
-            rec = "Acceptable clinical candidate. Perform GUIDE-seq or CIRCLE-seq validation."
-        elif spec_score >= 40.0:
-            tier = "MODERATE_SPECIFICITY"
-            rec = "Moderate off-target liability. Consider high-fidelity engineered nuclease (e.g. SpCas9-HF1, HiFi-Cas9, or enAsCas12a)."
-        else:
-            tier = "POOR_OFF_TARGET_RISK"
-            rec = "Unacceptable promiscuous off-target cutting. Discard guide or switch target exon/PAM site."
-
-        if nuc == "SpCas9":
+        if nuclease == "SpCas9":
             pam = "5'-NGG-3'"
-            pam_ori = "3_PRIME_NGG"
-            seed_def = "PAM-proximal 3' seed (positions 11-20)"
-            cut_t = "Blunt double-strand break (3 nt upstream of PAM)"
+            pam_orientation = "3_PRIME_NGG"
+            seed_definition = "PAM-proximal positions 11-20 in this simplified model"
+            cut_type = "Blunt double-strand break (approximately 3 nt upstream of PAM)"
         else:
             pam = "5'-TTTV-3'"
-            pam_ori = "5_PRIME_TTTV"
-            seed_def = "PAM-proximal 5' seed (positions 1-8)"
-            cut_t = "Staggered 5-nt 5' overhang (positions 18/23)"
+            pam_orientation = "5_PRIME_TTTV"
+            seed_definition = "PAM-proximal positions 1-8 in this simplified model"
+            cut_type = "Staggered double-strand break"
 
         return NucleaseComparisonResult(
-            guide_id=guide_id,
+            guide_id=str(guide_id),
             on_target_sequence=on_target_sequence,
-            nuclease_type=nuc,
+            nuclease_type=nuclease,
             pam_motif=pam,
-            pam_orientation=pam_ori,
-            seed_region_definition=seed_def,
-            cut_type=cut_t,
-            overall_specificity_score=spec_score,
+            pam_orientation=pam_orientation,
+            seed_region_definition=seed_definition,
+            cut_type=cut_type,
+            overall_specificity_score=specificity_score,
             fidelity_tier=tier,
             evaluated_off_target_sites=assessments,
-            clinical_recommendation=rec,
+            clinical_recommendation=recommendation,
         )
 
 
-# ==============================================================================
-# CLI & BATCH PROCESSING
-# ==============================================================================
-
 def _validate_safe_path(filepath: str) -> str:
-    """Validate that a file path does not contain path traversal attempts."""
-    normalized = os.path.normpath(filepath)
-    if ".." in normalized.split(os.sep):
+    raw_path = os.fspath(filepath)
+    if any(part == ".." for part in raw_path.replace("\\", "/").split("/")):
         raise argparse.ArgumentTypeError(
             f"Path traversal detected in '{filepath}'. Paths must not contain '..' segments."
         )
-    return normalized
+    return os.path.normpath(raw_path)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="crispr-offtarget-cas12-cas9-agent",
-        description="CRISPR Cas12a vs Cas9 Comparative Specificity & Off-Target Cleavage Engine"
+        prog="crispr-offtarget",
+        description="Research-use Cas9/Cas12a supplied-candidate mismatch heuristic",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Eval
-    p_eval = subparsers.add_parser("eval", help="Evaluate guide sequence against off-target candidates")
+    p_eval = subparsers.add_parser("eval", help="Evaluate a guide against supplied candidate sequences")
     p_eval.add_argument("--guide-id", default="GUIDE-2026-001")
-    p_eval.add_argument("--seq", "-s", required=True, help="On-target guide sequence (20nt for Cas9, 23nt for Cas12a)")
+    p_eval.add_argument("--seq", "-s", required=True)
     p_eval.add_argument("--nuclease", "-n", default="SpCas9", choices=["SpCas9", "AsCas12a"])
-    p_eval.add_argument("--offtargets", nargs="*", default=[], help="Candidate off-target sequences")
-    p_eval.add_argument("--json", action="store_true", help="Output JSON format")
+    p_eval.add_argument("--offtargets", nargs="*", default=[])
+    p_eval.add_argument("--json", action="store_true")
 
-    # Chat
-    p_chat = subparsers.add_parser("chat", help="Clinical/biology query on Cas9 vs Cas12a")
+    p_chat = subparsers.add_parser("chat", help="Show model-scope information")
     p_chat.add_argument("query", nargs="+")
 
-    # Batch
-    p_batch = subparsers.add_parser("batch", help="Batch process CSV records")
+    p_batch = subparsers.add_parser("batch", help="Batch process guide records from CSV")
     p_batch.add_argument("-i", "--input", required=True, type=_validate_safe_path)
     p_batch.add_argument("-o", "--output", default="cas_comparison_results.csv", type=_validate_safe_path)
 
     args = parser.parse_args(argv)
 
     if args.command == "eval":
-        ot_candidates = [{"name": f"OT-{idx+1:02d}", "sequence": seq} for idx, seq in enumerate(args.offtargets)]
-        res = CRISPRCas12Cas9Engine.evaluate_guide(
+        candidates = [
+            {"name": f"OT-{index + 1:02d}", "sequence": sequence}
+            for index, sequence in enumerate(args.offtargets)
+        ]
+        result = CRISPRCas12Cas9Engine.evaluate_guide(
             guide_id=args.guide_id,
             on_target_sequence=args.seq,
             nuclease_type=args.nuclease,
-            off_target_candidates=ot_candidates,
+            off_target_candidates=candidates,
         )
         if args.json:
-            print(res.to_json())
+            print(result.to_json())
         else:
             print("=" * 80)
-            print(f"  CRISPR {res.nuclease_type.upper()} SPECIFICITY & OFF-TARGET ASSESSMENT — {res.guide_id}")
-            print(f"  Fidelity Tier: [{res.fidelity_tier}] | Specificity Score: {res.overall_specificity_score:.1f} / 100")
+            print(f"  CRISPR {result.nuclease_type.upper()} SUPPLIED-CANDIDATE ASSESSMENT")
+            print(f"  Guide: {result.guide_id} | Tier: [{result.fidelity_tier}]")
+            print(f"  Heuristic specificity score: {result.overall_specificity_score:.1f} / 100")
             print("=" * 80)
-            print(f"  On-Target Guide:  {res.on_target_sequence}")
-            print(f"  PAM Architecture: {res.pam_motif} ({res.pam_orientation})")
-            print(f"  Seed Region:      {res.seed_region_definition}")
-            print(f"  Cleavage Type:    {res.cut_type}")
-            print("-" * 80)
-            if res.evaluated_off_target_sites:
-                print("  Evaluated Off-Target Loci:")
-                for ot in res.evaluated_off_target_sites:
-                    print(f"    * [{ot.risk_level:20s}] {ot.site_name}: {ot.off_target_sequence} | Mismatches: {ot.mismatch_count} (Seed: {ot.seed_mismatches_count}) | Cleavage: {ot.cleavage_probability_percent:.3f}%")
-            else:
-                print("  No candidate off-target sequences provided for comparison.")
-            print("-" * 80)
-            print(f"  Recommendation: {res.clinical_recommendation}")
+            for candidate in result.evaluated_off_target_sites:
+                print(
+                    f"  [{candidate.risk_level:20s}] {candidate.site_name}: "
+                    f"{candidate.off_target_sequence} | mismatches={candidate.mismatch_count} "
+                    f"| score={candidate.cleavage_probability_percent:.3f}%"
+                )
+            print(f"\n  Interpretation: {result.clinical_recommendation}")
+            print("  Research use only; not a validated CFD implementation or clinical tool.")
             print("=" * 80)
         return 0
 
-    elif args.command == "chat":
-        q = " ".join(args.query).lower()
-        if "cas12" in q or "cpf1" in q:
-            print("Cas12a features 5' TTTV PAM, 5' seed region (pos 1-8), staggered 5-nt overhangs, and superior off-target discrimination compared to SpCas9.")
-        elif "seed" in q:
-            print("Cas9 seed is PAM-proximal 3' (positions 11-20), whereas Cas12a seed is PAM-proximal 5' (positions 1-8).")
+    if args.command == "chat":
+        query = " ".join(args.query).lower()
+        if "cas12" in query or "cpf1" in query:
+            print("Cas12a uses a 5' TTTV PAM and differs from SpCas9 in PAM orientation and cleavage pattern.")
+        elif "seed" in query:
+            print("This heuristic treats SpCas9 positions 11-20 and Cas12a positions 1-8 as PAM-proximal seed regions.")
         else:
-            print("CRISPR Cas12a vs Cas9 Engine active. Supports Hsu-Zhang and CFD off-target modeling.")
+            print(
+                "This tool applies simplified position-weighted mismatch penalties to supplied "
+                "candidate sequences. It is not the complete CFD model and does not search a genome."
+            )
         return 0
 
-    elif args.command == "batch":
-        with open(args.input, mode="r", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
+    if args.command == "batch":
+        with open(args.input, mode="r", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
             rows = list(reader)
+
         out_rows = []
-        for r in rows:
-            gid = r.get("guide_id", "G-001")
-            seq = r.get("sequence", r.get("on_target", "GACACCGTGGACAGCAACAT"))
-            nuc = r.get("nuclease", "SpCas9")
-            res_obj = CRISPRCas12Cas9Engine.evaluate_guide(gid, seq, nuc)
-            out_rows.append({
-                **r,
-                "nuclease": res_obj.nuclease_type,
-                "specificity_score": res_obj.overall_specificity_score,
-                "fidelity_tier": res_obj.fidelity_tier,
-                "cut_type": res_obj.cut_type,
-            })
+        for row in rows:
+            guide_id = row.get("guide_id", "G-001")
+            sequence = row.get("sequence", row.get("on_target", "GACACCGTGGACAGCAACAT"))
+            nuclease = row.get("nuclease", "SpCas9")
+            result = CRISPRCas12Cas9Engine.evaluate_guide(guide_id, sequence, nuclease)
+            out_rows.append(
+                {
+                    **row,
+                    "nuclease": result.nuclease_type,
+                    "specificity_score": result.overall_specificity_score,
+                    "fidelity_tier": result.fidelity_tier,
+                    "cut_type": result.cut_type,
+                }
+            )
+
         if out_rows:
-            with open(args.output, mode="w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
+            with open(args.output, mode="w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(out_rows[0].keys()))
                 writer.writeheader()
                 writer.writerows(out_rows)
         print(f"Batch processed {len(out_rows)} rows -> {args.output}")
         return 0
+
+    return 0
 
 
 if __name__ == "__main__":

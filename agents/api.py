@@ -1,55 +1,65 @@
-"""
-FastAPI REST API Server for Crispr Offtarget Cas12 Cas9 Agent.
-"""
-from typing import Dict, Any, List
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from .base import AuditLogger, PHIGuard
-from .models import SystemTaskPayload, ConsensusDossier
+"""FastAPI server for the rule-based audit subsystem."""
+
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field
+
+from .base import AuditLogger, SecurityException
+from .metrics import GLOBAL_METRICS
+from .models import SystemTaskPayload
 from .supervisor import SystemSupervisor
 
 supervisor = SystemSupervisor(model_provider="mock")
 
 app = FastAPI(
-    title="Crispr Offtarget Cas12 Cas9 Agent API",
-    description="Enterprise Distributed Component Platform (AI Drug Discovery, Structural Biology & Wet-Lab Robotics)",
-    version="3.0.0-ENTERPRISE",
+    title="CRISPR Off-Target Agent API",
+    description="Research-use deterministic audit utilities",
+    version="2.1.0",
 )
 
 
 class ChatRequest(BaseModel):
-    query: str
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    query: str = Field(..., min_length=1, max_length=4000)
 
 
 @app.get("/health")
 def health():
-    return {"status": "HEALTHY", "service": "crispr-offtarget-cas12-cas9-agent", "domain": "AI Drug Discovery, Structural Biology & Wet-Lab Robotics", "standard": "wwPDB / IUPAC / OpenSMILES / ISAC Standards", "version": "3.0.0-ENTERPRISE"}
-
-
-@app.get("/metrics")
-def metrics():
     return {
-        "dossiers_processed_total": len(supervisor.dossier_registry),
-        "audit_blocks_total": len(AuditLogger.get_trail()),
-        "system_status": "NOMINAL_OPTIMAL"
+        "status": "HEALTHY",
+        "service": "crispr-offtarget-cas12-cas9-agent",
+        "version": "2.1.0",
     }
+
+
+@app.get("/metrics", response_class=Response)
+def metrics():
+    return Response(
+        content=GLOBAL_METRICS.export_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.post("/api/audit")
 def api_audit(payload: SystemTaskPayload):
-    dossier = supervisor.process_task(payload)
-    return dossier.to_dict()
+    try:
+        return supervisor.process_task(payload).to_dict()
+    except SecurityException as exc:
+        raise HTTPException(status_code=400, detail="Sensitive identifier rejected") from exc
 
 
 @app.post("/api/chat")
-def api_chat(req: ChatRequest):
+def api_chat(request: ChatRequest):
     try:
-        ans = supervisor.query_supervisory_chat(req.query)
-        return {"response": ans}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return {"response": supervisor.query_supervisory_chat(request.query)}
+    except SecurityException as exc:
+        raise HTTPException(status_code=400, detail="Sensitive identifier rejected") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Unable to process query") from exc
 
 
 @app.get("/api/audit/logs")
 def api_audit_logs():
-    return {"audit_trail": AuditLogger.get_trail(), "verified": AuditLogger.verify_integrity()}
+    return {
+        "audit_trail": AuditLogger.get_trail(),
+        "verified": AuditLogger.verify_integrity(),
+    }

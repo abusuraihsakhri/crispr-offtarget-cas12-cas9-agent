@@ -1,30 +1,32 @@
-"""
-Inference Engine supporting local Ollama, Claude, OpenAI, and deterministic Mock with Zero-PHI checks.
-"""
+"""Deterministic local query responder used by the audit subsystem."""
+
 from .base import PHIGuard
 
 
 class MockLLM:
-    def __init__(self, system_name: str = "Crispr Offtarget Cas12 Cas9 Agent"):
+    """A deterministic local responder; no external model or network call is made."""
+
+    def __init__(self, system_name: str = "CRISPR Off-Target Agent"):
         self.system_name = system_name
 
     def invoke(self, prompt: str) -> str:
         PHIGuard.assert_no_phi(prompt)
-        return f"[{self.system_name} Deterministic Verification Engine]: Clinical & scientific analysis verified for query: '{prompt[:60]}...'. Parameters evaluated under wwPDB / IUPAC / OpenSMILES / ISAC Standards."
+        preview = str(prompt).strip().replace("\n", " ")[:120]
+        return (
+            f"[{self.system_name} deterministic mode] Query accepted: {preview!r}. "
+            "No external language model was called."
+        )
 
 
 class LLMFactory:
-    """Creates configured LLM client instances with zero-PHI protection."""
+    """Create the only inference provider implemented by this repository."""
 
     @staticmethod
-    def create(provider: str = "mock", system_name: str = "Crispr Offtarget Cas12 Cas9 Agent"):
-        prov = str(provider).lower()
-        if prov in ["mock", "deterministic", "test"]:
+    def create(provider: str = "mock", system_name: str = "CRISPR Off-Target Agent"):
+        normalized = str(provider).strip().lower()
+        if normalized in {"mock", "deterministic", "test"}:
             return MockLLM(system_name)
-        elif prov in ["ollama", "local"]:
-            return MockLLM(system_name)
-        elif prov in ["claude", "anthropic"]:
-            return MockLLM(system_name)
-        elif prov in ["openai", "gpt4"]:
-            return MockLLM(system_name)
-        return MockLLM(system_name)
+        raise ValueError(
+            f"Unsupported model provider {provider!r}. "
+            "This repository currently implements deterministic local mode only."
+        )

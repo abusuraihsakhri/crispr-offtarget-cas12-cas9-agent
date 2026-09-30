@@ -1,112 +1,72 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Crispr Offtarget Cas12 Cas9 Engine API",
-    "description": "Enterprise Distributed Component Platform (Clinical & Cryptographic AI) adhering to CAP / CLSI / NIST Standards.",
-    "version": "3.0.0-ENTERPRISE",
-    "contact": {
-      "name": "Dr. Abu Suraih Sakhri",
-      "url": "https://github.com/abusuraihsakhri"
-    }
+    "title": "CRISPR Off-Target Agent API",
+    "description": "Research-use deterministic audit utilities. The sequence heuristic is exposed through the CLI and browser application, not this API.",
+    "version": "2.1.0"
   },
   "paths": {
     "/health": {
       "get": {
-        "summary": "Health and metadata check",
+        "summary": "Health check",
         "responses": {
           "200": {
-            "description": "System optimal"
+            "description": "Service status"
           }
         }
       }
     },
     "/metrics": {
       "get": {
-        "summary": "Prometheus operational metrics",
+        "summary": "Prometheus metrics",
         "responses": {
           "200": {
-            "description": "Prometheus text metrics"
+            "description": "Prometheus text exposition",
+            "content": {
+              "text/plain": {}
+            }
           }
         }
       }
     },
     "/api/audit": {
       "post": {
-        "summary": "Dispatch task payload across specialized workers",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "task_id": {
-                    "type": "string"
-                  },
-                  "target_identifier": {
-                    "type": "string"
-                  },
-                  "primary_metric": {
-                    "type": "number"
-                  },
-                  "secondary_metric": {
-                    "type": "number"
-                  },
-                  "status_descriptor": {
-                    "type": "string"
-                  },
-                  "is_critical_flag": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "task_id",
-                  "target_identifier",
-                  "primary_metric"
-                ]
-              }
-            }
-          }
-        },
+        "summary": "Evaluate a deterministic rule-subsystem payload",
         "responses": {
           "200": {
-            "description": "Consensus dossier with HMAC signature"
+            "description": "Consensus dossier"
+          },
+          "400": {
+            "description": "Sensitive identifier rejected"
+          },
+          "422": {
+            "description": "Payload validation failed"
           }
         }
       }
     },
     "/api/chat": {
       "post": {
-        "summary": "Air-gapped supervisory conversational assistant",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "query": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "query"
-                ]
-              }
-            }
-          }
-        },
+        "summary": "Use the deterministic local query responder",
         "responses": {
           "200": {
-            "description": "Supervisory response"
+            "description": "Deterministic response"
+          },
+          "400": {
+            "description": "Sensitive identifier rejected"
+          },
+          "422": {
+            "description": "Payload validation failed"
           }
         }
       }
     },
     "/api/audit/logs": {
       "get": {
-        "summary": "Retrieve and cryptographically verify HMAC audit trail",
+        "summary": "Retrieve the in-memory audit hash chain",
         "responses": {
           "200": {
-            "description": "Cryptographic audit trail"
+            "description": "Audit entries and integrity status"
           }
         }
       }

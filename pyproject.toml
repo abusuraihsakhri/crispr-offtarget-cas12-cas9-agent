@@ -1,27 +1,54 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=80"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crispr-offtarget-cas12-cas9-engine"
-version = "2.0.0"
-description = "CRISPR-Scan Pro: Cas9 / Cas12a CFD Score & Off-Target Cutting Predictor"
+name = "crispr-offtarget-cas12-cas9-agent"
+version = "2.1.0"
+description = "Research-use Cas9/Cas12a supplied-candidate mismatch heuristic and audit utilities"
 readme = "README.md"
-authors = [{ name = "Dr. Abu Suraih Sakhri", email = "abusuraih@example.com" }]
-license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Abu Suraih Sakhri" }]
+license = "MIT"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Topic :: Security/Cryptography",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.120,<1",
+    "uvicorn>=0.40,<1",
+]
+dev = [
+    "build>=1.3,<2",
+    "pip-audit>=2.9,<3",
+    "pytest>=9,<10",
+    "ruff>=0.12,<1",
+]
 
 [project.scripts]
-crispr-offtarget-cas12-cas9-engine = "crispr_offtarget_scan.cli:main"
+crispr-offtarget = "crispr_cas12_cas9:main"
+crispr-agent = "cli:main"
 
 [project.urls]
-Homepage = "https://github.com/abusuraihsakhri/crispr-offtarget-cas12-cas9-engine"
-Repository = "https://github.com/abusuraihsakhri/crispr-offtarget-cas12-cas9-engine.git"
+Homepage = "https://github.com/abusuraihsakhri/crispr-offtarget-cas12-cas9-agent"
+Repository = "https://github.com/abusuraihsakhri/crispr-offtarget-cas12-cas9-agent.git"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["crispr_cas12_cas9", "cli", "enrichment", "simulator"]
+
+[tool.setuptools.packages.find]
+include = ["agents*", "crispr_offtarget_scan*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

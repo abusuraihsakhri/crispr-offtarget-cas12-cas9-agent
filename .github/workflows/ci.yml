@@ -1,40 +1,139 @@
-name: Crispr Offtarget Cas12 Cas9 Engine CI/CD & Security Verification
+name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+env:
+  AUDIT_SECRET_KEY: ${{ github.sha }}
 
 jobs:
-  test-and-audit:
+  test:
+    name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[api,dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q agents crispr_offtarget_scan cli.py crispr_cas12_cas9.py enrichment.py simulator.py
+      - name: Run test suite
+        run: python -m pytest -q
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+  quality:
+    name: Build, lint, and audit
+    runs-on: ubuntu-latest
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install fastapi uvicorn pydantic pytest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[api,dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Build distributions
+        run: python -m build
+      - name: Audit Python dependencies
+        run: pip-audit
+      - name: Smoke-test installed CLI entry points
+        run: |
+          crispr-offtarget --help
+          crispr-agent --help
+      - name: Validate browser JavaScript syntax
+        run: node --check web/app.js
 
-    - name: Run Pytest Suite
-      run: |
-        pytest -v
+  browser:
+    name: Browser Python smoke test
+    runs-on: ubuntu-latest
 
-    - name: Security SAST & Zero-PHI Audit
-      run: |
-        python -c "
-        from agents.base import PHIGuard, AuditLogger
-        import pytest
-        assert AuditLogger.verify_integrity() is True
-        print('Security & Zero-PHI Audit Passed!')
-        "
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install pinned browser test dependency
+        run: |
+          python -m pip install "playwright==1.63.0"
+          python -m playwright install --with-deps chromium
+      - name: Exercise Pyodide app end to end
+        run: |
+          python -m http.server 8000 --bind 127.0.0.1 >/tmp/crispr-pages.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          python tests/browser_smoke.py
+
+  container:
+    name: Docker API smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build runtime image
+        run: docker build --tag crispr-offtarget-agent:ci .
+      - name: Exercise API container
+        run: |
+          docker run --detach --rm \
+            --name crispr-offtarget-agent-ci \
+            --publish 127.0.0.1:8001:8000 \
+            --env AUDIT_SECRET_KEY="$AUDIT_SECRET_KEY" \
+            crispr-offtarget-agent:ci
+          trap 'docker rm --force crispr-offtarget-agent-ci >/dev/null 2>&1 || true' EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8001/health >/tmp/health.json; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker logs crispr-offtarget-agent-ci
+              exit 1
+            fi
+            sleep 1
+          done
+
+          python - <<'PY'
+          import json
+          with open("/tmp/health.json", encoding="utf-8") as handle:
+              health = json.load(handle)
+          assert health["status"] == "HEALTHY"
+          assert health["version"] == "2.1.0"
+          PY
+
+          curl --fail --silent http://127.0.0.1:8001/metrics | grep --quiet '^system_tasks_total'
+
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"task_id":"CI-API-001","target_identifier":"TARGET-001","primary_metric":14.5,"secondary_metric":3.2,"status_descriptor":"NOMINAL","is_critical_flag":false}' \
+            http://127.0.0.1:8001/api/audit >/tmp/audit.json
+
+          python - <<'PY'
+          import json
+          with open("/tmp/audit.json", encoding="utf-8") as handle:
+              dossier = json.load(handle)
+          assert dossier["task_id"] == "CI-API-001"
+          assert dossier["overall_urgency"] == "ROUTINE"
+          assert dossier["audit_hash"]
+          PY
